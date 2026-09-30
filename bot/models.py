@@ -14,6 +14,7 @@ class Holding:
     contract: str
     name: str | None
     media_uri: str | None
+    projects: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

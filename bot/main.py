@@ -133,6 +133,9 @@ async def _track_wallet(
         )
         return
 
+    await notify_pending_offers(
+        result, context.bot, context.application.bot_data["prices"], db
+    )
     rows = [
         {
             "marketplace": o.marketplace,
@@ -273,6 +276,9 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     total_below = 0
     for row in rows:
         result = await scanner.scan_wallet(telegram_id, row["address"])
+        await notify_pending_offers(
+            result, context.bot, context.application.bot_data["prices"], db
+        )
         for offer in result.new_offers:
             if offer.price_mutez >= min_mutez:
                 total_new += 1
@@ -310,7 +316,7 @@ async def on_alert_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 async def notify_new_offers(
     scan: WalletScan, bot, prices: TzktPriceClient, min_mutez: int = 0
-) -> None:
+) -> list[tuple[str, str]]:
     """Send alerts for a finished wallet scan.
 
     Offers under `min_mutez` are dropped here, at notify time, so they are
@@ -318,28 +324,62 @@ async def notify_new_offers(
     this function, so one guard covers the poller and /scan.
     """
     if not scan.new_offers:
-        return
+        return []
 
     new_offers = [o for o in scan.new_offers if o.price_mutez >= min_mutez]
+    acknowledged = [o.key for o in scan.new_offers if o.price_mutez < min_mutez]
     if not new_offers:
-        return
+        return acknowledged
 
     usd_rate = await prices.xtz_to_usd()
 
     for offer in new_offers[:NEW_OFFER_BATCH_LIMIT]:
         payload = alerts.build_alert(offer, usd_rate)
-        with suppress(Exception):
-            if "photo" in payload:
-                await bot.send_photo(**payload)
-            else:
-                await bot.send_message(**payload)
+        if "photo" in payload:
+            try:
+                await bot.send_photo(
+                    chat_id=scan.telegram_id, photo=payload["photo"],
+                    caption=payload["caption"], parse_mode=payload["parse_mode"],
+                )
+                acknowledged.append(offer.key)
+                log.info("sent offer %s to Telegram chat %s", offer.offer_id, scan.telegram_id)
+                continue
+            except Exception:  # A broken NFT preview must not hide the offer.
+                log.warning("offer %s preview failed; sending text", offer.offer_id)
+        try:
+            await bot.send_message(
+                chat_id=scan.telegram_id, text=payload["text"],
+                parse_mode=payload["parse_mode"], disable_web_page_preview=True,
+            )
+            acknowledged.append(offer.key)
+            log.info("sent offer %s to Telegram chat %s", offer.offer_id, scan.telegram_id)
+        except Exception as exc:
+            log.warning("offer %s delivery failed (%s); will retry", offer.offer_id, type(exc).__name__)
 
     remaining = len(new_offers) - NEW_OFFER_BATCH_LIMIT
     if remaining > 0:
-        with suppress(Exception):
+        try:
             await bot.send_message(
-                f"…and {remaining} more new offer(s). Use /offers to see them all."
+                chat_id=scan.telegram_id,
+                text=f"…and {remaining} more new offer(s). Use /offers to see them all.",
             )
+            acknowledged.extend(o.key for o in new_offers[NEW_OFFER_BATCH_LIMIT:])
+        except Exception as exc:
+            log.warning("offer summary delivery failed (%s); will retry", type(exc).__name__)
+    return acknowledged
+
+
+async def notify_pending_offers(scan: WalletScan, bot, prices: TzktPriceClient, db: Database) -> None:
+    if scan.error:
+        return
+    pending = await db.pending_offers(scan.telegram_id, scan.address)
+    if not pending:
+        return
+    delivery = WalletScan(scan.telegram_id, scan.address, scan.nft_count, pending, 0)
+    keys = await notify_new_offers(
+        delivery, bot, prices, await db.get_min_alert_mutez(scan.telegram_id)
+    )
+    await db.acknowledge_alerts(scan.telegram_id, keys)
 
 
 async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -401,9 +441,7 @@ async def run() -> None:
             if scan.error:
                 log.warning("scan error for %s: %s", scan.address, scan.error)
                 return
-            if scan.new_offers:
-                min_mutez = await db.get_min_alert_mutez(scan.telegram_id)
-                await notify_new_offers(scan, bot, prices, min_mutez)
+            await notify_pending_offers(scan, bot, prices, db)
 
         try:
             await app.initialize()

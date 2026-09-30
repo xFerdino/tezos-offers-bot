@@ -185,6 +185,54 @@ async def run(dsn: str) -> int:
     failures += check("different telegram_id sees all as new", len(other_new) == 3, f"{len(other_new)}")
 
     print("\n== untrack ==")
+    print("\n== expiry preserves exact marketplace/offer pairs ==")
+    uid = 1001
+    await db.upsert_offers(uid, ADDRESS, make_offers(3) + make_offers(3, "fxhash"), None)
+    active = {("objkt", "1000"), ("objkt", "1001"), ("fxhash", "1002")}
+    await db.mark_expired(uid, ADDRESS, active, marketplaces=["objkt", "fxhash"])
+    failures += check("all live pairs survive", await db.known_offer_keys(uid, ADDRESS) == active)
+    await db.mark_expired(uid, ADDRESS, set(), marketplaces=["objkt"])
+    failures += check(
+        "empty successful scan expires only its source",
+        await db.known_offer_keys(uid, ADDRESS) == {("fxhash", "1002")},
+    )
+
+    print("\n== delivery retries after Telegram failure ==")
+    from bot import main as bot_main
+    from bot.scanner import WalletScan
+
+    failures += check("pending delivery path exists", hasattr(bot_main, "notify_pending_offers"))
+    if hasattr(bot_main, "notify_pending_offers"):
+        sent = []
+
+        class Telegram:
+            failing = True
+
+            async def send_photo(self, *, chat_id, photo, caption, parse_mode):
+                raise RuntimeError("image unavailable")
+
+            async def send_message(self, *, chat_id, text, **kwargs):
+                if self.failing:
+                    raise RuntimeError("Telegram unavailable")
+                sent.append(text)
+
+        class Prices:
+            async def xtz_to_usd(self):
+                return None
+
+        telegram = Telegram()
+        uid = 1002
+        await db.upsert_offers(uid, ADDRESS, make_offers(2), None)
+        await db.set_min_alert_mutez(uid, 2_000_000)
+        scan = WalletScan(uid, ADDRESS, 2, [], 0)
+        await bot_main.notify_pending_offers(scan, telegram, Prices(), db)
+        failures += check("failed delivery remains pending", len(await db.pending_offers(uid, ADDRESS)) == 1)
+        telegram.failing = False
+        await bot_main.notify_pending_offers(scan, telegram, Prices(), db)
+        await bot_main.notify_pending_offers(scan, telegram, Prices(), db)
+        failures += check("retry delivers once and respects threshold", len(sent) == 1 and "2 XTZ" in sent[0])
+        failures += check("successful delivery is acknowledged", not await db.pending_offers(uid, ADDRESS))
+
     removed = await db.remove_wallet(TELEGRAM_ID, ADDRESS)
     failures += check("wallet removed", removed)
     failures += check("second remove returns false", not await db.remove_wallet(TELEGRAM_ID, ADDRESS))

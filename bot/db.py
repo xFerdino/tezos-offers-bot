@@ -49,6 +49,9 @@ CREATE TABLE IF NOT EXISTS offers (
 CREATE INDEX IF NOT EXISTS idx_offers_status ON offers (telegram_id, status);
 CREATE INDEX IF NOT EXISTS idx_offers_address ON offers (telegram_id, address, status);
 
+-- Existing history stays acknowledged; new/revived offers opt into delivery.
+ALTER TABLE offers ADD COLUMN IF NOT EXISTS alert_pending BOOLEAN NOT NULL DEFAULT FALSE;
+
 -- Per-user alert threshold. All offers are still stored and shown by /offers;
 -- this only decides which NEW ones are announced.
 CREATE TABLE IF NOT EXISTS settings (
@@ -191,15 +194,16 @@ class Database:
             """
             INSERT INTO offers (
                 telegram_id, address, marketplace, offer_id, token_pk, token_id,
-                contract, token_name, media_uri, price_mutez, price_usd, buyer
+                contract, token_name, media_uri, price_mutez, price_usd, buyer, alert_pending
             )
-            SELECT * FROM UNNEST(
+            SELECT *, TRUE FROM UNNEST(
                 $1::bigint[], $2::text[], $3::text[], $4::text[], $5::text[],
                 $6::text[], $7::text[], $8::text[], $9::text[], $10::bigint[],
                 $11::double precision[], $12::text[]
             )
             ON CONFLICT (telegram_id, marketplace, offer_id) DO UPDATE
                 SET status = 'active',
+                    alert_pending = TRUE,
                     last_seen_at = NOW(),
                     price_mutez = EXCLUDED.price_mutez,
                     price_usd = EXCLUDED.price_usd,
@@ -217,6 +221,30 @@ class Database:
 
         inserted_keys = {(r["marketplace"], r["offer_id"]) for r in inserted}
         return [o for o in offer_list if o.key in inserted_keys]
+
+    async def pending_offers(self, telegram_id: int, address: str) -> list[Offer]:
+        rows = await self._pool.fetch(
+            """SELECT marketplace, offer_id, token_pk, token_id, contract,
+                      token_name, media_uri, price_mutez, buyer
+               FROM offers WHERE telegram_id = $1 AND address = $2
+                 AND status = 'active' AND alert_pending
+               ORDER BY first_seen_at DESC, id""",
+            telegram_id, address,
+        )
+        return [Offer(**dict(row)) for row in rows]
+
+    async def acknowledge_alerts(
+        self, telegram_id: int, keys: list[tuple[str, str]]
+    ) -> None:
+        await self._pool.execute(
+            """UPDATE offers SET alert_pending = FALSE
+               WHERE telegram_id = $1 AND (marketplace, offer_id) IN (
+                   SELECT * FROM UNNEST($2::text[], $3::text[])
+               )""",
+            telegram_id,
+            [market for market, _ in keys],
+            [offer_id for _, offer_id in keys],
+        )
 
     async def get_min_alert_mutez(self, telegram_id: int) -> int:
         """Alert threshold in mutez. 0 means alert on every offer."""
@@ -249,13 +277,10 @@ class Database:
         Scoping matters: when one data source is down we must not expire the
         offers it reported, or the next healthy scan would re-alert them all.
         """
-        if not active_keys:
-            return 0
-
         if marketplaces is None:
             marketplaces = list({k[0] for k in active_keys})
 
-        offer_ids = list({k[1] for k in active_keys})
+        keys = sorted(active_keys)
 
         result = await self._pool.execute(
             """
@@ -274,8 +299,8 @@ class Database:
             telegram_id,
             address,
             marketplaces,
-            marketplaces,
-            offer_ids,
+            [market for market, _ in keys],
+            [offer_id for _, offer_id in keys],
         )
         try:
             return int(result.split()[-1])

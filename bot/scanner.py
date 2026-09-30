@@ -83,9 +83,7 @@ class Scanner:
             return WalletScan(telegram_id, address, 0, [], 0)
 
         # objkt-indexed marketplaces (objkt, fxhash, HEN, akaSwap) in one call.
-        objkt_offers = await self._objkt.get_offers_for_tokens(
-            [h.token_pk for h in holdings]
-        )
+        objkt_offers = await self._objkt.get_offers_for_wallet(address, holdings)
 
         # Teia is a separate indexer, so it needs its own pass. If Teia is
         # unavailable we must not expire its offers, or the next successful

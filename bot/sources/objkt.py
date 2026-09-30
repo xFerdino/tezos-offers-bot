@@ -7,8 +7,8 @@ in this indexer and is handled by teia.py.
 Schema notes (verified against the live API):
   - comparison operators are underscore-prefixed: _eq, _in
   - token_pk is a bigint, so it must be passed as a string
-  - bigmap 103260 (objkt offers) is keyed by offer id, NOT by token, so it
-    cannot be queried by token; the GraphQL token_pk path is the only route.
+  - token.holders filters token offers by wallet directly
+  - project offers use collection_offer="agpk:<gallery pk>", with token=null
 """
 
 from __future__ import annotations
@@ -27,10 +27,6 @@ log = logging.getLogger(__name__)
 # objkt paginates with limit/offset; 100 is well inside their 500 cap.
 _HOLDINGS_PAGE = 100
 _OFFERS_PAGE = 100
-
-# Above this many tokens, log that a scan is using extra requests. Not a cap:
-# every token is always queried.
-_MAX_TOKEN_PKS = 500
 
 # objkt's own marketplace group -> the label we show and expire under.
 GROUP_LABELS = {
@@ -87,7 +83,8 @@ class ObjktClient:
         query = """
         query Holdings($addr: String!, $limit: Int!, $offset: Int!) {
           token_holder(
-            where: { holder_address: { _eq: $addr } }
+            where: { holder_address: { _eq: $addr }, quantity: { _gt: 0 } }
+            order_by: { token_pk: asc }
             limit: $limit
             offset: $offset
           ) {
@@ -99,6 +96,7 @@ class ObjktClient:
               fa_contract
               display_uri
               thumbnail_uri
+              galleries { gallery { pk name } }
             }
           }
         }
@@ -135,6 +133,11 @@ class ObjktClient:
                         contract=token.get("fa_contract") or "",
                         name=token.get("name"),
                         media_uri=token.get("display_uri") or token.get("thumbnail_uri"),
+                        projects={
+                            f"agpk:{g['gallery']['pk']}": g["gallery"].get("name") or "Project"
+                            for g in token.get("galleries") or []
+                            if g.get("gallery") and g["gallery"].get("pk") is not None
+                        },
                     )
                 )
 
@@ -144,23 +147,39 @@ class ObjktClient:
 
         return holdings
 
-    async def get_offers_for_tokens(self, token_pks: list[str]) -> list[Offer]:
-        """Active offers across objkt + fxhash + HEN for the given tokens.
-
-        objkt caps _in list length, so tokens are chunked. Every token is
-        queried: a hard cap here silently drops offers on big wallets.
-        """
-        if not token_pks:
-            return []
-
+    async def get_offers_for_wallet(
+        self, address: str, holdings: list[Holding]
+    ) -> list[Offer]:
+        """Token offers filtered by owner, plus projects represented in the wallet."""
+        by_project = {}
+        for holding in holdings:
+            for project in holding.projects:
+                by_project.setdefault((holding.contract, project), holding)
+        projects = list(dict.fromkeys(project for _, project in by_project))
+        where = {
+            "_or": [
+                {"token": {"holders": {
+                    "holder_address": {"_eq": address}, "quantity": {"_gt": 0}
+                }}},
+                {"collection_offer": {"_in": projects}},
+            ],
+            "_and": [{"_or": [
+                {"target_address": {"_is_null": True}},
+                {"target_address": {"_eq": address}},
+            ]}],
+        }
         query = """
-        query Offers($pks: [bigint!]) {
+        query WalletOffers($where: offer_active_bool_exp!, $limit: Int!, $offset: Int!) {
           offer_active(
-            where: { token_pk: { _in: $pks } }
-            limit: 100
+            where: $where
+            order_by: { id: desc }
+            limit: $limit
+            offset: $offset
           ) {
             id
             token_pk
+            collection_offer
+            fa_contract
             price_xtz
             buyer_address
             marketplace_contract
@@ -178,28 +197,34 @@ class ObjktClient:
         }
         """
 
-        offers: list[Offer] = []
-        unique_pks = list(dict.fromkeys(str(pk) for pk in token_pks))
-
-        if len(unique_pks) > _MAX_TOKEN_PKS:
-            # No silent truncation: a wallet with more NFTs than one request
-            # budget is fine, it just costs more chunks.
-            log.info(
-                "querying %d tokens in %d chunks (over the %d guard)",
-                len(unique_pks),
-                -(-len(unique_pks) // 100),
-                _MAX_TOKEN_PKS,
+        offers: dict[tuple[str, str], Offer] = {}
+        offset = 0
+        while True:
+            data = await self._query(
+                query, {"where": where, "limit": _OFFERS_PAGE, "offset": offset}
             )
-
-        for start in range(0, len(unique_pks), 100):
-            chunk = unique_pks[start : start + 100]
-            data = await self._query(query, {"pks": chunk})
-            for row in data.get("offer_active") or []:
+            rows = data.get("offer_active") or []
+            for row in rows:
+                project = row.get("collection_offer")
+                if project:
+                    holding = by_project.get((row.get("fa_contract"), project))
+                    if holding is None:
+                        continue
+                    # One alert per bid, even when several owned editions qualify.
+                    row = {**row, "token_pk": holding.token_pk, "token": {
+                        "fa_contract": holding.contract,
+                        "token_id": holding.token_id,
+                        "name": f"Project offer: {holding.projects[project]}",
+                        "display_uri": holding.media_uri,
+                    }}
                 offer = self._parse_offer(row)
                 if offer:
-                    offers.append(offer)
+                    offers[offer.key] = offer
+            if len(rows) < _OFFERS_PAGE:
+                break
+            offset += _OFFERS_PAGE
 
-        return offers
+        return list(offers.values())
 
     @staticmethod
     def _parse_offer(row: dict) -> Offer | None:

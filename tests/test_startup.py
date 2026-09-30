@@ -254,48 +254,6 @@ async def check_min_threshold(db):
     return failures
 
 
-def check_no_token_truncation():
-    """Regression: the objkt offer query capped tokens at 500.
-
-    A 3,102-NFT wallet only ever had its first 500 tokens queried, so offers on
-    the other 2,602 were silently invisible. Every token must be sent.
-    """
-    print("\n== objkt token coverage ==")
-    failures = 0
-    import ast
-    import inspect
-
-    from bot.sources.objkt import ObjktClient
-
-    tree = ast.parse(inspect.getsource(ObjktClient.get_offers_for_tokens).strip())
-    # Chunking a list is fine (unique_pks[start:start+100]). Truncating it to a
-    # fixed budget is the bug: that silently drops tokens from the scan.
-    # The one legitimate slice is chunking: unique_pks[start : start + 100].
-    # Its bounds are a plain loop variable. A truncation instead uses a literal
-    # or a module guard (_MAX_TOKEN_PKS), and silently drops offers.
-    chunk_lines = {
-        n.lineno
-        for n in ast.walk(tree)
-        if isinstance(n, ast.Subscript)
-        and isinstance(n.slice, ast.Slice)
-        and isinstance(n.slice.lower, ast.Name)
-        and isinstance(n.slice.upper, ast.BinOp)
-    }
-    truncating = [
-        f"line {n.lineno}: {ast.unparse(n)}"
-        for n in ast.walk(tree)
-        if isinstance(n, ast.Subscript)
-        and isinstance(n.slice, ast.Slice)
-        and n.lineno not in chunk_lines
-    ]
-    failures += check(
-        "get_offers_for_tokens does not truncate the token list",
-        not truncating,
-        "; ".join(truncating) if truncating else "only the chunk slice",
-    )
-    return failures
-
-
 async def main() -> int:
     failures = 0
 
@@ -385,7 +343,6 @@ async def main() -> int:
 
         failures += await check_teia_cadence()
         failures += check_expiry_scope()
-        failures += check_no_token_truncation()
         failures += await check_min_threshold(db)
 
         await app.shutdown()

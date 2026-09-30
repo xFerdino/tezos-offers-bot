@@ -10,7 +10,7 @@ MARKET_URLS = {
     "objkt": "https://objkt.com/asset/{contract}/{token_id}",
     "fxhash": "https://fxhash.xyz/asset/{contract}/{token_id}",
     "hic et nunc": "https://hicte.nunc.art/asset/{contract}/{token_id}",
-    "teia": "https://teia.art/objkt/{contract}/{token_id}",
+    "teia": "https://teia.art/objkt/{token_id}",
     "akaSwap": "https://akaswap.io/token/{contract}/{token_id}",
     "dogami": "https://dogami.io/asset/{contract}/{token_id}",
 }

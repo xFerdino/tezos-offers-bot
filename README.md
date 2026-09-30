@@ -17,7 +17,8 @@ matters most: **offers on the NFTs you already hold**.
 | Versum | not supported | Platform shut down 2023-12-01, contract frozen |
 
 objkt's indexer aggregates offers made on fxhash, HEN and akaSwap, so a single
-query covers all of them. Teia requires its own pass.
+paginated wallet query covers all of them. It also includes objkt project
+offers on fxhash collections held by the wallet. Teia requires its own pass.
 
 ## Setup
 
@@ -154,7 +155,7 @@ rather than free.
 every SCAN_INTERVAL seconds (default 300):
   for each tracked wallet:
     1. resolve held NFTs           objkt: token_holder
-    2. fetch active offers         objkt: offer_active (batched by token_pk)
+    2. fetch active offers         objkt: offer_active (wallet + owned projects)
                                    teia: offers (batched by contract + token_id)
     3. diff against stored offers  only new (marketplace, offer_id) pairs
     4. convert XTZ -> USD          TzKT /v1/head quoteUsd
@@ -162,8 +163,16 @@ every SCAN_INTERVAL seconds (default 300):
 ```
 
 Offers are deduplicated on `(telegram_id, marketplace, offer_id)`, so each
-offer alerts exactly once. Offers that disappear from the indexer are marked
-`expired` rather than deleted, keeping history intact.
+offer normally alerts once. Failed Telegram deliveries stay pending in
+Postgres and retry on a later scan; failed image previews fall back to text.
+Offers that disappear from the indexer are marked `expired` rather than
+deleted, keeping history intact. A crash between sending and acknowledging
+an alert can still cause a duplicate.
+
+Project offers have no individual `token_pk`. The bot matches their
+`collection_offer` value (`agpk:<gallery pk>`) to the projects of NFTs you
+hold, and sends one alert per offer even if you own several matching
+editions. The alert includes a link to an eligible NFT on objkt.
 
 ### Alert threshold
 
@@ -183,24 +192,26 @@ nothing is hidden — you just stop being pinged for dust bids.
 ### Scan cost
 
 Teia is polled on its own slower cadence (`TEIA_SCAN_INTERVAL`, default 600s)
-because it costs one query per held token while objkt batches 100 tokens per
-query. That makes a fast `SCAN_INTERVAL` affordable.
+because it costs one query per held token. objkt filters ordinary offers
+by wallet ownership on the server and includes matching project offers,
+with 100 offers per page.
 
-Measured on a real 3,102-NFT wallet:
+Measured on a real wallet on 2026-09-30 (3,062 positive NFT balances):
 
 | Stage | Requests | Time |
 |---|---|---|
-| Holdings (`token_holder`, 100/page) | ~31 | 19s |
-| objkt offers (batches of 100) | 5 | 3s |
-| Teia offers (per token) | 3102 | **254s** |
+| Holdings and project memberships (`token_holder`, 100/page) | 31 | 18s |
+| objkt token + project offers (488 offers, 100/page) | 5 | 27s |
+| Teia offers (per token, previous measurement) | ~3100 | **254s** |
 
-So the objkt-only pass is about **22 seconds**, which makes `SCAN_INTERVAL=60`
-comfortable. Teia at 254s is why it cannot run every cycle — at a 60s interval
-a combined scan would need a 461% duty cycle and would never finish.
+This objkt pass took about **45 seconds**. The loop waits `SCAN_INTERVAL`
+after each complete cycle, so `60` means a 60-second pause, not a guaranteed
+one-minute alert latency. A Teia pass and additional wallets add time.
 
-objkt does not expose an offer-by-wallet query: `target_address` and
-`seller_address` are `null` on real offers, so the only link from an offer back
-to an owner is `token_pk`, which requires enumerating held tokens.
+The wallet filter is `token.holders.holder_address` with `quantity > 0`.
+`target_address` and `seller_address` alone do not identify the owner of an
+ordinary open offer. Holdings are still fetched in pages for project
+membership, NFT counts, and the separate Teia scan.
 
 Teia is not a subset of objkt. On the 3,102-NFT wallet, 93 tokens carried a
 Teia offer and only 8 of those also had an objkt offer, so skipping Teia
@@ -209,9 +220,8 @@ entirely would miss 85 tokens. On the 8 shared tokens Teia was the better bid
 
 ### API details worth knowing
 
-- objkt's `offers` bigmap (ptr 103260) is keyed by **offer id**, not by token,
-  so it cannot answer "which offers exist for this token". The GraphQL
-  `token_pk` path is the only way to do that lookup.
+- Project offers deliberately have `token_pk: null` and `token: null`;
+  this is not evidence of an indexing delay. Match their gallery IDs instead.
 - `token_pk` is a `bigint` in the schema, so it must be passed as a string.
 - Comparison operators are underscore-prefixed: `_eq`, `_in`.
 - Teia must be filtered by **both** `fa2_address` and `token_id`. Filtering by
@@ -225,6 +235,7 @@ entirely would miss 85 tokens. On the 8 shared tokens Teia was the better bid
 .venv/bin/python tests/test_pipeline.py   # live mainnet scan, needs network
 .venv/bin/python tests/test_db.py         # real PostgreSQL: schema, dedupe, expiry
 .venv/bin/python tests/test_startup.py    # DB connect + Application wiring
+.venv/bin/python tests/test_offer_delivery.py # wallet/project matching + Telegram payloads
 ```
 
 `test_pipeline.py` runs a full live scan against a wallet that holds NFTs and

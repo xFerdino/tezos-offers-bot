@@ -92,7 +92,7 @@ async def main() -> int:
             failures += check("contract is KT1", holdings[0].contract.startswith("KT1"), holdings[0].contract)
 
         print("\n== live: offers via objkt indexer ==")
-        offers = await objkt.get_offers_for_tokens([h.token_pk for h in holdings])
+        offers = await objkt.get_offers_for_wallet(WALLET, holdings)
         failures += check("offers found", len(offers) > 0, f"{len(offers)} offers")
         markets = {o.marketplace for o in offers}
         failures += check("no unknown marketplace", "unknown" not in markets, str(markets))
