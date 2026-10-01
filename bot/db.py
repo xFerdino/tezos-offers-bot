@@ -227,7 +227,13 @@ class Database:
             """SELECT marketplace, offer_id, token_pk, token_id, contract,
                       token_name, media_uri, price_mutez, buyer
                FROM offers WHERE telegram_id = $1 AND address = $2
-                 AND status = 'active' AND alert_pending
+                 -- Status is deliberately not filtered. A sub-threshold offer is
+                 -- acknowledged here (without texting), so it must be readable
+                 -- even if it has already expired in this same scan. Filtering
+                 -- on 'active' left such rows permanently pending: upsert made
+                 -- them active, mark_expired then expired them, and they were
+                 -- resurrected as "new" on every cycle forever.
+                 AND alert_pending
                ORDER BY first_seen_at DESC, id""",
             telegram_id, address,
         )

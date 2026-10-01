@@ -251,6 +251,54 @@ async def check_min_threshold(db):
     await db._pool.execute("DELETE FROM offers WHERE telegram_id = $1", uid)
     await db._pool.execute("DELETE FROM settings WHERE telegram_id = $1", uid)
 
+    # A sub-threshold offer that keeps flipping expired/active used to re-count
+    # as "new" every cycle and never clear, so the bot looked stuck.
+    await db.set_min_alert_mutez(uid, 5_000_000)
+    await db.upsert_offers(uid, addr, [make(500_000, 12)], 0.3)
+    first = await db.pending_offers(uid, addr)
+    failures += check(
+        "sub-threshold offer is delivered once for acknowledgement",
+        [o.offer_id for o in first] == ["12"],
+        f"got {[o.offer_id for o in first]}",
+    )
+    await db.acknowledge_alerts(uid, [("objkt", "12")])
+    failures += check(
+        "acknowledged low offer does not come back",
+        await db.pending_offers(uid, addr) == [],
+    )
+    # The real cycle: a still-live sub-threshold offer is re-upserted every
+    # scan. It must stay acknowledged, or it re-counts as "new" forever and the
+    # bot never reports a clean scan.
+    await db.upsert_offers(uid, addr, [make(500_000, 12)], 0.3)
+    failures += check(
+        "still-live low offer is not re-alerted on the next scan",
+        await db.pending_offers(uid, addr) == [],
+    )
+
+    # The production loop, in order: upsert revives an expired row, then
+    # mark_expired kills it again inside the same scan. Delivery runs after
+    # both, so a status filter would strand the row as pending forever and it
+    # would report as "1 new" every single cycle.
+    await db.upsert_offers(uid, addr, [make(500_000, 13)], 0.3)
+    await db.mark_expired(uid, addr, set(), marketplaces=["objkt"])
+    revived = [o.offer_id for o in await db.pending_offers(uid, addr)]
+    failures += check(
+        "offer expired mid-scan is still acknowledgeable",
+        revived == ["13"],
+        f"got {revived}",
+    )
+    await db.acknowledge_alerts(uid, [("objkt", "13")])
+    # objkt no longer lists the bid, so it is not upserted again. The row must
+    # stay acknowledged instead of being pending on every future cycle.
+    await db.mark_expired(uid, addr, set(), marketplaces=["objkt"])
+    failures += check(
+        "thrash cycle stops after one acknowledgement",
+        await db.pending_offers(uid, addr) == [],
+    )
+
+    await db._pool.execute("DELETE FROM offers WHERE telegram_id = $1", uid)
+    await db._pool.execute("DELETE FROM settings WHERE telegram_id = $1", uid)
+
     return failures
 
 
