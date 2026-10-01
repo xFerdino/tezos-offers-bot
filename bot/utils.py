@@ -69,11 +69,12 @@ def resolve_media_uri(uri: str | None) -> str | None:
         if uri.startswith(scheme):
             cid = uri[len(scheme):]
             if scheme == "ipfs://":
-                # Cloudflare's gateway serves the public IPFS network.
-                return f"https://cloudflare-ipfs.com/ipfs/{cid}"
+                # Cloudflare's gateway is dead: the hostname no longer resolves,
+                # which is why previews vanished while the code stayed unchanged.
+                return f"https://gateway.pinata.cloud/ipfs/{cid}"
             return f"https://arweave.net/{cid}"
 
     # Bare CID, or a data: URI we cannot render.
     if re.fullmatch(r"[A-Za-z0-9]{46,}", uri):
-        return f"https://cloudflare-ipfs.com/ipfs/{uri}"
+        return f"https://gateway.pinata.cloud/ipfs/{uri}"
     return None

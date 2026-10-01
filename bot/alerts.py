@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import httpx
+
 from bot.models import Offer
 from bot.utils import format_usd, format_xtz, resolve_media_uri, shorten_address
 
@@ -57,16 +59,22 @@ def build_alert(offer: Offer, usd_rate: float | None) -> dict:
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
     }
-
-    media = resolve_media_uri(offer.media_uri)
-    if media:
-        payload["photo"] = media
-        payload["caption"] = caption
-    else:
-        # No usable image, send text only rather than a broken preview.
-        payload.pop("photo", None)
-
     return payload
+
+
+async def fetch_preview(http: httpx.AsyncClient, uri: str | None) -> bytes | None:
+    """Download an NFT image so Telegram never has to fetch the gateway itself."""
+    url = resolve_media_uri(uri)
+    if not url:
+        return None
+    try:
+        response = await http.get(url, timeout=20.0, follow_redirects=True)
+        response.raise_for_status()
+    except Exception:  # noqa: BLE001 - a missing preview must not hide the offer
+        return None
+    if not response.headers.get("content-type", "").startswith("image/"):
+        return None
+    return response.content
 
 
 def build_summary(offers: list, usd_rate: float | None) -> str:

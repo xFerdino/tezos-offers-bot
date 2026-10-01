@@ -134,7 +134,8 @@ async def _track_wallet(
         return
 
     await notify_pending_offers(
-        result, context.bot, context.application.bot_data["prices"], db
+        result, context.bot, context.application.bot_data["prices"], db,
+        context.application.bot_data["http"],
     )
     rows = [
         {
@@ -277,7 +278,8 @@ async def scan_cmd(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     for row in rows:
         result = await scanner.scan_wallet(telegram_id, row["address"])
         await notify_pending_offers(
-            result, context.bot, context.application.bot_data["prices"], db
+            result, context.bot, context.application.bot_data["prices"], db,
+            context.application.bot_data["http"],
         )
         for offer in result.new_offers:
             if offer.price_mutez >= min_mutez:
@@ -315,7 +317,11 @@ async def on_alert_click(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 async def notify_new_offers(
-    scan: WalletScan, bot, prices: TzktPriceClient, min_mutez: int = 0
+    scan: WalletScan,
+    bot,
+    prices: TzktPriceClient,
+    min_mutez: int = 0,
+    http: httpx.AsyncClient | None = None,
 ) -> list[tuple[str, str]]:
     """Send alerts for a finished wallet scan.
 
@@ -335,11 +341,15 @@ async def notify_new_offers(
 
     for offer in new_offers[:NEW_OFFER_BATCH_LIMIT]:
         payload = alerts.build_alert(offer, usd_rate)
-        if "photo" in payload:
+        # Telegram's own servers fail to fetch IPFS gateway URLs, so the
+        # bytes are downloaded here and uploaded. A dead gateway then costs a
+        # missing preview instead of a failed message.
+        preview = await alerts.fetch_preview(http, offer.media_uri) if http else None
+        if preview:
             try:
                 await bot.send_photo(
-                    chat_id=scan.telegram_id, photo=payload["photo"],
-                    caption=payload["caption"], parse_mode=payload["parse_mode"],
+                    chat_id=scan.telegram_id, photo=preview,
+                    caption=payload["text"], parse_mode=payload["parse_mode"],
                 )
                 acknowledged.append(offer.key)
                 log.info("sent offer %s to Telegram chat %s", offer.offer_id, scan.telegram_id)
@@ -369,7 +379,13 @@ async def notify_new_offers(
     return acknowledged
 
 
-async def notify_pending_offers(scan: WalletScan, bot, prices: TzktPriceClient, db: Database) -> None:
+async def notify_pending_offers(
+    scan: WalletScan,
+    bot,
+    prices: TzktPriceClient,
+    db: Database,
+    http: httpx.AsyncClient | None = None,
+) -> None:
     if scan.error:
         return
     pending = await db.pending_offers(scan.telegram_id, scan.address)
@@ -377,7 +393,7 @@ async def notify_pending_offers(scan: WalletScan, bot, prices: TzktPriceClient, 
         return
     delivery = WalletScan(scan.telegram_id, scan.address, scan.nft_count, pending, 0)
     keys = await notify_new_offers(
-        delivery, bot, prices, await db.get_min_alert_mutez(scan.telegram_id)
+        delivery, bot, prices, await db.get_min_alert_mutez(scan.telegram_id), http
     )
     await db.acknowledge_alerts(scan.telegram_id, keys)
 
@@ -434,6 +450,8 @@ async def run() -> None:
 
         scanner = Scanner(db, objkt, teia, prices)
         app = build_application(db, scanner, prices, objkt)
+        # Shared client, also used to download NFT previews for Telegram.
+        app.bot_data["http"] = http
         bot = app.bot
         log.info("starting scanner every %ds", config.scan_interval)
 
@@ -441,7 +459,7 @@ async def run() -> None:
             if scan.error:
                 log.warning("scan error for %s: %s", scan.address, scan.error)
                 return
-            await notify_pending_offers(scan, bot, prices, db)
+            await notify_pending_offers(scan, bot, prices, db, http)
 
         try:
             await app.initialize()
