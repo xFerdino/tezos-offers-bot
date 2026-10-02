@@ -333,23 +333,8 @@ async def notify_new_offers(
         return []
 
     new_offers = [o for o in scan.new_offers if o.price_mutez >= min_mutez]
-    suppressed = [o for o in scan.new_offers if o.price_mutez < min_mutez]
-    acknowledged = [o.key for o in suppressed]
+    acknowledged = [o.key for o in scan.new_offers if o.price_mutez < min_mutez]
     if not new_offers:
-        # Silence looks identical to a dead bot, so say when something was held
-        # back. ponytail: one line per scan, not per offer.
-        if suppressed:
-            try:
-                await bot.send_message(
-                    chat_id=scan.telegram_id,
-                    text=(
-                        f"🤫 {len(suppressed)} new offer(s) below "
-                        f"{format_xtz(min_mutez)} XTZ, so not sent. "
-                        f"See them with /offers or lower the bar with /min."
-                    ),
-                )
-            except Exception as exc:  # noqa: BLE001
-                log.warning("suppressed notice failed (%s)", type(exc).__name__)
         return acknowledged
 
     usd_rate = await prices.xtz_to_usd()
