@@ -54,6 +54,16 @@ else
     --quiet
 fi
 
+# A fresh project ships default-allow-ssh and default-allow-rdp, which open
+# port 22 (and 3389) to 0.0.0.0/0. The rule above is the only SSH we need, so
+# delete the wide-open ones rather than leaving a public SSH door behind.
+for open_rule in default-allow-ssh default-allow-rdp; do
+  if gcloud compute firewall-rules describe "$open_rule" --quiet >/dev/null 2>&1; then
+    echo "==> Removing wide-open rule $open_rule"
+    gcloud compute firewall-rules delete "$open_rule" --quiet
+  fi
+done
+
 # --- VM ----------------------------------------------------------------
 if gcloud compute instances describe "$VM_NAME" --zone="$ZONE" --quiet >/dev/null 2>&1; then
   echo "==> VM $VM_NAME already exists, reusing it"

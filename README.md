@@ -68,6 +68,30 @@ the month. `deploy/gcp-setup.sh` passes `--boot-disk-type=pd-standard` for
 this reason. To convert an existing VM, snapshot it, create a `pd-standard`
 disk from the snapshot, and recreate the instance against that disk.
 
+### Two traps that cost real money
+
+Both of these are silent. Nothing errors, the VM runs fine, and the bill
+arrives later.
+
+**1. `pd-balanced` boot disk.** A free instance type does not make the setup
+free. The 30 GB Always Free allowance applies to **standard PD only** - the
+e2-micro stays free, the disk does not. Balanced and SSD PD bill from the
+first byte, and the disk is what actually charges you.
+
+**2. Default firewall rules.** Every new GCP project ships with
+`default-allow-ssh` and `default-allow-rdp`, which open ports 22 and 3389 to
+`0.0.0.0/0`. This bot needs no inbound traffic at all - it only makes
+outbound calls. A key-only VM tolerates it, but a weak or reused password
+does not, and a public port 22 is an invitation. `deploy/gcp-setup.sh` creates
+an IP-scoped SSH rule and then deletes both default rules.
+
+Check your own project any time:
+
+```bash
+gcloud compute disks list          # TYPE must read pd-standard
+gcloud compute firewall-rules list # no rule may allow 0.0.0.0/0 on tcp:22
+```
+
 Target: **GCP `e2-micro`** — the only instance type in the Always Free tier,
 1 GB RAM and 30 GB disk, **free permanently** (not free for 6 months like the
 AWS credit). Available in `us-west1`, `us-central1` and `us-east1`.
