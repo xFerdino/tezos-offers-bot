@@ -53,6 +53,7 @@ used, not a hypothetical.
 | Resource | Cost | Note |
 |---|---|---|
 | `e2-micro` VM | **$0** | The only Always Free instance type. 1 GB RAM, 30 GB disk. One per project, free forever |
+| Boot disk | **$0** | Must be **standard PD**. The 30 GB free-tier allowance does *not* cover `balanced` or `SSD` PD, which bill from the first byte |
 | Compute Engine API | $0 | Enabling an API does not bill |
 | Egress | $0 | 1 GB/month free from North America; image previews use a fraction of that |
 | Cloud NAT Gateway | **~$32/mo** | **Do not create one.** Not needed — the VM's external IP handles all outbound traffic |
@@ -60,6 +61,12 @@ used, not a hypothetical.
 
 Billing must be enabled on the project, and the VM must be in `us-west1`,
 `us-central1` or `us-east1` to qualify.
+
+The disk type is the easy mistake to make: `e2-micro` is free but a
+`pd-balanced` boot disk is not, and the instance then bills every second of
+the month. `deploy/gcp-setup.sh` passes `--boot-disk-type=pd-standard` for
+this reason. To convert an existing VM, snapshot it, create a `pd-standard`
+disk from the snapshot, and recreate the instance against that disk.
 
 Target: **GCP `e2-micro`** — the only instance type in the Always Free tier,
 1 GB RAM and 30 GB disk, **free permanently** (not free for 6 months like the

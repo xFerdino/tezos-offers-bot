@@ -69,7 +69,7 @@ else
     --tags=bot \
     --scopes=logging-write \
     --boot-disk-size=30GB \
-    --boot-disk-type=pd-balanced \
+    --boot-disk-type=pd-standard \
     --quiet
 fi
 
