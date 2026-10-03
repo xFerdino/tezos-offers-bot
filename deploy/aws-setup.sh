@@ -3,17 +3,15 @@
 # Provision an AWS Lightsail instance for the bot.
 #
 # Why Lightsail and not EC2:
-#   - Flat bundle price: compute + disk + static public IPv4 + data transfer.
-#     On EC2 those are billed separately, and a public IPv4 alone is
-#     $0.005/hr (~$3.65/mo) before you have paid for an instance at all.
-#   - No VPC means there is no NAT Gateway to create by accident. A NAT
-#     Gateway is ~$32.85/mo and has no free tier, which would burn the credit
-#     in about three weeks.
-#   - The bot needs a public IPv4 so Telegram can deliver updates to it.
+#   - Flat bundle: compute + disk + static public IPv4 + data transfer, so no
+#     per-component surprises on top of the bundle.
+#   - Managed networking avoids provisioning an EC2 NAT Gateway, which the
+#     bot never needs.
+#   - Public IPv4 supports outbound calls to Telegram and the NFT indexers.
+#     Telegram updates are polled; no inbound application port is needed.
 #
-# Cost: micro_3_0 is $7/mo (1 GB RAM, 40 GB disk, 2 TB transfer). Over the
-# 6-month credit window that is ~$42, comfortably inside the $100 credit.
-# nano_3_0 is $5/mo but has 0.5 GB RAM, which is too tight for Postgres.
+# Size: micro_3_0 gives 1 GB RAM, 40 GB disk and 2 TB transfer. nano_3_0 only
+# has 0.5 GB RAM, which is too tight for Postgres.
 #
 # Usage:
 #   export AWS_REGION=us-east-1     # optional, this is the default
@@ -23,7 +21,7 @@ set -euo pipefail
 
 REGION="${AWS_REGION:-us-east-1}"
 INSTANCE_NAME="${INSTANCE_NAME:-tezos-offers-bot}"
-# RAM size in GB. 1.0 = micro_3_0 ($7). 2.0 = small_3_0 ($12).
+# RAM size in GB. 1.0 = micro_3_0. 2.0 = small_3_0.
 RAM_GB="${RAM_GB:-1.0}"
 
 if ! command -v aws >/dev/null 2>&1; then

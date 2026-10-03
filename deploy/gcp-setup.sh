@@ -2,9 +2,9 @@
 #
 # Provision a GCP e2-micro VM for the bot.
 #
-# e2-micro is the only instance in the Always Free tier: 1 GB RAM, 30 GB disk,
-# free forever in us-west1 / us-central1 / us-east1. One such instance per
-# project, billed by time used and capped at one month per calendar month.
+# e2-micro gives 1 GB RAM and a 30 GB standard PD boot disk, in
+# us-west1 / us-central1 / us-east1. Other resources and traffic can still be
+# billed, so check your bill after provisioning.
 #
 # Usage:
 #   export GCP_PROJECT_ID=my-project-123
@@ -70,7 +70,7 @@ if gcloud compute instances describe "$VM_NAME" --zone="$ZONE" --quiet >/dev/nul
 else
   echo "==> Creating $VM_NAME (e2-micro, 30 GB)"
   # No Cloud NAT: an instance with an external IP gets outbound internet
-  # directly. A NAT Gateway would cost roughly $32/mo and is not needed.
+  # directly. A NAT Gateway is not needed.
   gcloud compute instances create "$VM_NAME" \
     --zone="$ZONE" \
     --machine-type=e2-micro \

@@ -39,44 +39,21 @@ cp .env.example .env
 
 ### 3. Deploy to a server
 
-See [Deployment](#deployment) below for the recommended GCP setup.
+See [Deployment](#deployment) below for GCP and AWS Lightsail options.
 
 ## Deployment
 
-**It runs on Google Cloud at $0/month, indefinitely.** This is not a theory:
-the bot is deployed and running on a GCP `e2-micro` in the Always Free tier,
-tracking a 3,102-NFT wallet. Everything below is the setup that was actually
-used, not a hypothetical.
+The bot needs a Linux host with Docker and roughly 1 GB of RAM available for
+the bot and its Postgres container combined. It makes only outbound calls, so
+no inbound application port is ever required.
 
-### Why it is free
+Two host settings matter before you start.
 
-| Resource | Cost | Note |
-|---|---|---|
-| `e2-micro` VM | **$0** | The only Always Free instance type. 1 GB RAM, 30 GB disk. One per project, free forever |
-| Boot disk | **$0** | Must be **standard PD**. The 30 GB free-tier allowance does *not* cover `balanced` or `SSD` PD, which bill from the first byte |
-| Compute Engine API | $0 | Enabling an API does not bill |
-| Egress | $0 | 1 GB/month free from North America; image previews use a fraction of that |
-| Cloud NAT Gateway | **~$32/mo** | **Do not create one.** Not needed — the VM's external IP handles all outbound traffic |
-| Static IP | $0 | In-use addresses are free; only *reserved* addresses cost |
-
-Billing must be enabled on the project, and the VM must be in `us-west1`,
-`us-central1` or `us-east1` to qualify.
-
-The disk type is the easy mistake to make: `e2-micro` is free but a
-`pd-balanced` boot disk is not, and the instance then bills every second of
-the month. `deploy/gcp-setup.sh` passes `--boot-disk-type=pd-standard` for
-this reason. To convert an existing VM, snapshot it, create a `pd-standard`
-disk from the snapshot, and recreate the instance against that disk.
-
-### Two traps that cost real money
-
-Both of these are silent. Nothing errors, the VM runs fine, and the bill
-arrives later.
-
-**1. `pd-balanced` boot disk.** A free instance type does not make the setup
-free. The 30 GB Always Free allowance applies to **standard PD only** - the
-e2-micro stays free, the disk does not. Balanced and SSD PD bill from the
-first byte, and the disk is what actually charges you.
+**1. Disk type.** On GCP the boot disk must be **standard PD**. The 30 GB
+allowance does not cover `balanced` or `SSD` PD. `deploy/gcp-setup.sh` passes
+`--boot-disk-type=pd-standard` for this reason. To convert an existing VM,
+snapshot it, create a `pd-standard` disk from the snapshot, and recreate the
+instance against that disk.
 
 **2. Default firewall rules.** Every new GCP project ships with
 `default-allow-ssh` and `default-allow-rdp`, which open ports 22 and 3389 to
@@ -92,9 +69,14 @@ gcloud compute disks list          # TYPE must read pd-standard
 gcloud compute firewall-rules list # no rule may allow 0.0.0.0/0 on tcp:22
 ```
 
-Target: **GCP `e2-micro`** — the only instance type in the Always Free tier,
-1 GB RAM and 30 GB disk, **free permanently** (not free for 6 months like the
-AWS credit). Available in `us-west1`, `us-central1` and `us-east1`.
+Do **not** create a Cloud NAT Gateway. The VM's own external IP handles all
+outbound traffic, so nothing else is needed.
+
+### Google Cloud
+
+Target: **GCP `e2-micro`**, 1 GB RAM and a 30 GB standard persistent disk.
+Billing must be enabled on the project, and the VM must be in `us-west1`,
+`us-central1` or `us-east1`.
 
 ```bash
 # 1. install the Google Cloud CLI
@@ -141,15 +123,6 @@ docker compose logs -f bot
 (`shared_buffers=64MB`, `max_connections=20`). The bot needs no published
 port: it only makes outbound calls.
 
-**Cost: $0/month, indefinitely.** e2-micro is free in the Always Free tier.
-Two things to avoid:
-
-- Do **not** create a Cloud NAT Gateway — roughly $32/mo, which would turn a
-  free instance into a paid one. The VM's own external IP handles outbound
-  traffic, so nothing is needed.
-- The bot sends images over Telegram, so it consumes a small amount of egress.
-  The free tier allows 1 GB/month from North America, which is ample here.
-
 > **Run exactly one instance per bot token.** Two processes polling the same
 > token with `getUpdates` terminate each other, and Telegram reports
 > `Conflict: terminated by other getUpdates request`. If you run the bot
@@ -161,12 +134,20 @@ Two things to avoid:
 
 ### Alternative: AWS Lightsail
 
-If you would rather use the $100 AWS credit, `deploy/aws-setup.sh` creates a
-Lightsail instance. `micro_3_0` is $7/mo (1 GB, 40 GB disk, 2 TB transfer),
-so roughly $42 over six months. Lightsail is a flat bundle with a static IPv4
-included and no VPC, which avoids the ~$32.85/mo NAT Gateway trap. The AWS
-free tier no longer includes free compute hours, so this is credit-funded
-rather than free.
+The bot runs on the **Linux dual-stack Lightsail bundle** in Frankfurt
+(`eu-central-1`): 1 GB RAM, 40 GB SSD, public IPv4 and 2 TB transfer. The
+512 MB bundle leaves too little memory for the bot and Postgres together.
+
+Verify in Billing > Credits that Lightsail is listed in your credit's
+applicable products and check the balance and expiration date before
+provisioning. Re-check before the credit expires: stopping a Lightsail
+instance alone does not stop its bundle charges, so delete the instance if
+the credit will run out.
+
+Keep Postgres in Docker on the same instance. No managed database, load
+balancer or NAT Gateway is needed. Leave automatic paid snapshots disabled
+unless you budget for them separately. Only SSH needs inbound access, scoped
+to your IP; the Telegram bot uses outbound polling.
 
 ## Commands
 
